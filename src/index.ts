@@ -29,32 +29,33 @@
  * 
  */
 
+import bodyParser from 'body-parser';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import https from 'https';
-import http from 'http2';
-
-// Service Decorator Interface for Router Usage
-export interface JavahDecorator {
-    (_: any, key: (string | object)): void;
-}
+import http from 'http';
+import url from 'url';
 
 export interface Route {
-    key: (string | object);
+    key: string;
     path: string;
-    queue?: Response;
+    cors?: boolean;
+    queue: ({new (request: Request): {
+        request: Request;
+        response: Response;
+    }} | undefined);
 }
 
 // Global interface dedicated to request and response
 export interface IResq {
     status?: number;
-    method?: (`get` | `post`);
+    method?: (`get` | `post` | `put` | `delete`);
     header?: { 'Content-type'?: string };
 }
 
 // Global Interface Reference
-export interface Request extends IResq { url?: string; }
-export interface Response extends IResq { document?: string; }
+export interface Request extends IResq { url?: string; body?: any; params?: any; query?: any; }
+export interface Response extends IResq { document?: string; send: (data: any) => void }
 
 // Https Configure
 export interface Config {
@@ -72,27 +73,17 @@ export interface Config {
  * import JavahInstance from 'javah';
  * const Javah = new JavahInstance();
  * 
+ * \@Javah.Create()
  * export default class App {
- *     @Javah.Service(`/api/products`)
- *     public Products = class extends Javah.Page {
- *         public constructor() {
- *             super(); const {
- *                 request, response,
- *                 useState, useError, useFunction, usePath, send
- *             } = this;
- *             
- *             if (request.method === `get`) {
- *                 response.status = 200;
- *                 response.header = { 'Content-type': 'application/json' };
- *                 
- *                 send(usePath(`tests/products.json`));
- *             } else {
- *                 response.status = 404;
- *                 useError(`${request.url} ${response.status} Not Found`);
- *             }
- *         }
+ *     \@Javah.Service(`/`)
+ *     public Home = class extends Javah.Page {
+ *         constructor() { super(); this.response.send(`<h1>Hello, world!</h1>`); }
  *     }
  * }
+ * 
+ * Javah.live(8080, {}, () => {
+ *     console.log(`http://localhost:8080`);
+ * });
  * ```
  */
 export default class Javah {
@@ -100,45 +91,83 @@ export default class Javah {
     public routes: Array<Route> = [];
 
     // Saved Utils
-    public utils: { name: string } = { name: `my-app` };
+    public utils: { name: string; } = { name: `my-app` };
     
     // Classes inherited for Page Creation
     public Page = class {
         // Requests and Responses
-        public request: Request = { method: `get` }; /* FIXME */
-        public response: Response = { method: `get`, status: 200, document: `` };
+        public response: Response = {
+            status: 200,
+            document: ``,
+
+            // Forwarding and Sending Page Information
+            send: (data: any) => this.response.document = data
+        };
 
         // use* method similar to React
         public useError(message: string) { throw new Error(message); }
         public useState<T>(value: T): [T, Function] { return [value, (value_: T) => value = value_]; }
         public useFunction(callback: Function) { return callback; }
         public usePath(url: string) { return readFileSync(resolve(url), `utf-8`); }
-    
-        // Forwarding and Sending Page Information
-        public send = (data: any) => { this.response.document = data; }
-    }
-
-    // A Function inherited by a Service Class Decorator
-    public Service(@Log path: string): JavahDecorator {
-        return (_, key) => {
-            this.routes = [...this.routes, { key, path }];
-        }
     }
 
     // A Function inherited by a Create Class Decorator
-    public Create(@Log name?: string) {
-        return (target: any, _?: any) => {
+    public Create(@MinLength(3) name?: string): Function {
+        return (target: { new (): any }) => {
             if (name) this.utils.name = name;
 
             const app = new target();
-            Object.keys(app).forEach(method =>
-            this.routes[this.routes.length - 1].queue
-            = new app[method]().response);
+            Object.keys(app).forEach((method, idx) =>
+            this.routes[idx].queue
+            = app[method]);
+        }
+    }
+
+    // A Function inherited by a Service Property Decorator
+    public Service(@PathValidator() path: string): Function {
+        return (_: any, key: string) => {
+            this.routes = [...this.routes, { key, path, cors: false, queue: undefined }];
+        }
+    }
+
+    // A Function inherited by a Cors Property Decorator
+    public Cors(): Function {
+        return (_: any, key: string) => {
+            const idx = this.routes.findIndex(e => e.key === key);
+            if (this.routes[idx]) this.routes[idx].cors = true;
         }
     }
 
     // Live Server
     public live(port: number = 8080, config: Config, callback: () => void) {
+        const handle = (req: any, res: any) => {
+            const route = this.routes.find(e => e.path === url.parse(req.url).pathname);
+
+            let body = ``;
+            req.on(`data`, (chunk: string) => body += chunk);
+
+            req.on(`end`, () => {
+                if (route?.queue) { // page exists
+                    const head = new route.queue({
+                        method: req.method.toLowerCase(),
+                        body: body,
+                        query: url.parse(req.url, true).query,
+                        params: req.params
+                    });
+    
+                    res.writeHead(head.response.status || 200, head.response.header || {});
+                    res.write(head.response.document || ``);
+                    res.end();
+                } else { // page not exists
+                    if (route?.cors) res.setHeader(`Access-Control-Allow-Origin`, `*`);
+                    res.writeHead(404, { 'Content-type': 'text/html' });
+                    res.write(`<h1 style="text-align: center;">404 Not Found</h1>`);
+                    res.end();
+                }
+            });
+        }
+
+        // Https Configure Check
         if (config?.https) {
             const server = https.createServer({
                 cert: readFileSync(config.https.certificatePath),
@@ -146,35 +175,31 @@ export default class Javah {
                 ca: [
                     readFileSync(config.https.topCertificatePath),
                     readFileSync(config.https.topCertificatePath),
-            ]}, (req, res) => {
-                this.routes.forEach(route => {
-                    if (req.url === route.path) {
-                        res.writeHead(route.queue?.status || 200, route.queue?.header || {});
-                        res.write(route.queue?.document || ``);
-                        res.end();
-                    }
-                });
-            });
+            ]}, handle);
             
             server.listen(port, callback);
         } else {
-            const server = http.createServer((req, res) => {
-                res.write(`<p>asdf</p>`);
-                // this.routes.forEach(route => {
-                //     if (req.url === route.path) {
-                //         res.writeHead(route.queue?.status || 200, route.queue?.header || {});
-                //         res.write(route.queue?.document || ``);
-                //         res.end();
-                //     }
-                // });
-            });
-            
+            const server = http.createServer(handle);
+
             server.listen(port, callback);
         }
     }
 }
 
-// Javah Service Logging Parameter Decorator
-export function Log(target: any, key: string, index: number) {
-    // console.log(`${key} ${index} => ${JSON.stringify(target)}`);
+// Minimum Length Limiting Parameters Decorator
+export function MinLength(min: number) {
+    return (target: any, key: string, index: number) => {
+        target.validators = {
+            minLength: (args: string[]) => args[index].length >= min
+        }
+    }
+}
+
+// URL Validation Parameters Decorator
+export function PathValidator() {
+    return (target: any, key: string, index: number) => {
+        target.validators = {
+            pathValid: (args: string[]) => args[index].startsWith(`/`)
+        }
+    }
 }
