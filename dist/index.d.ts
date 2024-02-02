@@ -28,26 +28,33 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  *
  */
-export interface JavahDecorator {
-    (_: any, key: (string | object)): void;
-}
 export interface Route {
-    key: (string | object);
+    key: string;
     path: string;
-    queue?: Response;
+    cors?: boolean;
+    queue: ({
+        new (request: Request): {
+            request: Request;
+            response: Response;
+        };
+    } | undefined);
 }
 export interface IResq {
     status?: number;
-    method?: (`get` | `post`);
+    method?: (`get` | `post` | `put` | `delete`);
     header?: {
         'Content-type'?: string;
     };
 }
 export interface Request extends IResq {
     url?: string;
+    body?: any;
+    params?: any;
+    query?: any;
 }
 export interface Response extends IResq {
     document?: string;
+    send: (data: any) => void;
 }
 export interface Config {
     https?: {
@@ -63,27 +70,17 @@ export interface Config {
  * import JavahInstance from 'javah';
  * const Javah = new JavahInstance();
  *
+ * \@Javah.Create()
  * export default class App {
- *     @Javah.Service(`/api/products`)
- *     public Products = class extends Javah.Page {
- *         public constructor() {
- *             super(); const {
- *                 request, response,
- *                 useState, useError, useFunction, usePath, send
- *             } = this;
- *
- *             if (request.method === `get`) {
- *                 response.status = 200;
- *                 response.header = { 'Content-type': 'application/json' };
- *
- *                 send(usePath(`tests/products.json`));
- *             } else {
- *                 response.status = 404;
- *                 useError(`${request.url} ${response.status} Not Found`);
- *             }
- *         }
+ *     \@Javah.Service(`/`)
+ *     public Home = class extends Javah.Page {
+ *         constructor() { super(); this.response.send(`<h1>Hello, world!</h1>`); }
  *     }
  * }
+ *
+ * Javah.live(8080, {}, () => {
+ *     console.log(`http://localhost:8080`);
+ * });
  * ```
  */
 export default class Javah {
@@ -93,17 +90,17 @@ export default class Javah {
     };
     Page: {
         new (): {
-            request: Request;
             response: Response;
             useError(message: string): void;
             useState<T>(value: T): [T, Function];
             useFunction(callback: Function): Function;
             usePath(url: string): string;
-            send: (data: any) => void;
         };
     };
-    Service(path: string): JavahDecorator;
-    Create(name?: string): (target: any, _?: any) => void;
+    Create(name?: string): Function;
+    Service(path: string): Function;
+    Cors(): Function;
     live(port: number | undefined, config: Config, callback: () => void): void;
 }
-export declare function Log(target: any, key: string, index: number): void;
+export declare function MinLength(min: number): (target: any, key: string, index: number) => void;
+export declare function PathValidator(): (target: any, key: string, index: number) => void;

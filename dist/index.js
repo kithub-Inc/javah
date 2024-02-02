@@ -42,11 +42,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Log = void 0;
+exports.PathValidator = exports.MinLength = void 0;
 const fs_1 = require("fs");
 const path_1 = require("path");
 const https_1 = __importDefault(require("https"));
-const http2_1 = __importDefault(require("http2"));
+const http_1 = __importDefault(require("http"));
+const url_1 = __importDefault(require("url"));
 /**
  * **💫 Javah** - JavaScript framework similar to SpringBoot
  *
@@ -54,27 +55,17 @@ const http2_1 = __importDefault(require("http2"));
  * import JavahInstance from 'javah';
  * const Javah = new JavahInstance();
  *
+ * \@Javah.Create()
  * export default class App {
- *     @Javah.Service(`/api/products`)
- *     public Products = class extends Javah.Page {
- *         public constructor() {
- *             super(); const {
- *                 request, response,
- *                 useState, useError, useFunction, usePath, send
- *             } = this;
- *
- *             if (request.method === `get`) {
- *                 response.status = 200;
- *                 response.header = { 'Content-type': 'application/json' };
- *
- *                 send(usePath(`tests/products.json`));
- *             } else {
- *                 response.status = 404;
- *                 useError(`${request.url} ${response.status} Not Found`);
- *             }
- *         }
+ *     \@Javah.Service(`/`)
+ *     public Home = class extends Javah.Page {
+ *         constructor() { super(); this.response.send(`<h1>Hello, world!</h1>`); }
  *     }
  * }
+ *
+ * Javah.live(8080, {}, () => {
+ *     console.log(`http://localhost:8080`);
+ * });
  * ```
  */
 class Javah {
@@ -87,10 +78,12 @@ class Javah {
         this.Page = class {
             constructor() {
                 // Requests and Responses
-                this.request = { method: `get` }; /* FIXME */
-                this.response = { method: `get`, status: 200, document: `` };
-                // Forwarding and Sending Page Information
-                this.send = (data) => { this.response.document = data; };
+                this.response = {
+                    status: 200,
+                    document: ``,
+                    // Forwarding and Sending Page Information
+                    send: (data) => this.response.document = data
+                };
             }
             // use* method similar to React
             useError(message) { throw new Error(message); }
@@ -99,24 +92,58 @@ class Javah {
             usePath(url) { return (0, fs_1.readFileSync)((0, path_1.resolve)(url), `utf-8`); }
         };
     }
-    // A Function inherited by a Service Class Decorator
-    Service(path) {
-        return (_, key) => {
-            this.routes = [...this.routes, { key, path }];
-        };
-    }
     // A Function inherited by a Create Class Decorator
     Create(name) {
-        return (target, _) => {
+        return (target) => {
             if (name)
                 this.utils.name = name;
             const app = new target();
-            Object.keys(app).forEach(method => this.routes[this.routes.length - 1].queue
-                = new app[method]().response);
+            Object.keys(app).forEach((method, idx) => this.routes[idx].queue
+                = app[method]);
+        };
+    }
+    // A Function inherited by a Service Property Decorator
+    Service(path) {
+        return (_, key) => {
+            this.routes = [...this.routes, { key, path, cors: false, queue: undefined }];
+        };
+    }
+    // A Function inherited by a Cors Property Decorator
+    Cors() {
+        return (_, key) => {
+            const idx = this.routes.findIndex(e => e.key === key);
+            if (this.routes[idx])
+                this.routes[idx].cors = true;
         };
     }
     // Live Server
     live(port = 8080, config, callback) {
+        const handle = (req, res) => {
+            const route = this.routes.find(e => e.path === url_1.default.parse(req.url).pathname);
+            let body = ``;
+            req.on(`data`, (chunk) => body += chunk);
+            req.on(`end`, () => {
+                if (route === null || route === void 0 ? void 0 : route.queue) { // page exists
+                    const head = new route.queue({
+                        method: req.method.toLowerCase(),
+                        body: body,
+                        query: url_1.default.parse(req.url, true).query,
+                        params: req.params
+                    });
+                    res.writeHead(head.response.status || 200, head.response.header || {});
+                    res.write(head.response.document || ``);
+                    res.end();
+                }
+                else { // page not exists
+                    if (route === null || route === void 0 ? void 0 : route.cors)
+                        res.setHeader(`Access-Control-Allow-Origin`, `*`);
+                    res.writeHead(404, { 'Content-type': 'text/html' });
+                    res.write(`<h1 style="text-align: center;">404 Not Found</h1>`);
+                    res.end();
+                }
+            });
+        };
+        // Https Configure Check
         if (config === null || config === void 0 ? void 0 : config.https) {
             const server = https_1.default.createServer({
                 cert: (0, fs_1.readFileSync)(config.https.certificatePath),
@@ -125,42 +152,37 @@ class Javah {
                     (0, fs_1.readFileSync)(config.https.topCertificatePath),
                     (0, fs_1.readFileSync)(config.https.topCertificatePath),
                 ]
-            }, (req, res) => {
-                this.routes.forEach(route => {
-                    var _a, _b, _c;
-                    if (req.url === route.path) {
-                        res.writeHead(((_a = route.queue) === null || _a === void 0 ? void 0 : _a.status) || 200, ((_b = route.queue) === null || _b === void 0 ? void 0 : _b.header) || {});
-                        res.write(((_c = route.queue) === null || _c === void 0 ? void 0 : _c.document) || ``);
-                        res.end();
-                    }
-                });
-            });
+            }, handle);
             server.listen(port, callback);
         }
         else {
-            const server = http2_1.default.createServer((req, res) => {
-                res.write(`<p>asdf</p>`);
-                // this.routes.forEach(route => {
-                //     if (req.url === route.path) {
-                //         res.writeHead(route.queue?.status || 200, route.queue?.header || {});
-                //         res.write(route.queue?.document || ``);
-                //         res.end();
-                //     }
-                // });
-            });
+            const server = http_1.default.createServer(handle);
             server.listen(port, callback);
         }
     }
 }
 exports.default = Javah;
 __decorate([
-    __param(0, Log)
-], Javah.prototype, "Service", null);
-__decorate([
-    __param(0, Log)
+    __param(0, MinLength(3))
 ], Javah.prototype, "Create", null);
-// Javah Service Logging Parameter Decorator
-function Log(target, key, index) {
-    // console.log(`${key} ${index} => ${JSON.stringify(target)}`);
+__decorate([
+    __param(0, PathValidator())
+], Javah.prototype, "Service", null);
+// Minimum Length Limiting Parameters Decorator
+function MinLength(min) {
+    return (target, key, index) => {
+        target.validators = {
+            minLength: (args) => args[index].length >= min
+        };
+    };
 }
-exports.Log = Log;
+exports.MinLength = MinLength;
+// URL Validation Parameters Decorator
+function PathValidator() {
+    return (target, key, index) => {
+        target.validators = {
+            pathValid: (args) => args[index].startsWith(`/`)
+        };
+    };
+}
+exports.PathValidator = PathValidator;
